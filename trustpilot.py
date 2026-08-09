@@ -7,6 +7,7 @@ import random
 import re
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -23,12 +24,28 @@ _NEXT_DATA_RE = re.compile(
 _BROWSER_INSTALL_HINT = (
     "Playwright Chromium is missing. Install with: "
     "python -m playwright install chromium "
-    "(on Linux containers also: python -m playwright install-deps chromium)"
+    "(on Linux / Streamlit Cloud also add packages.txt system libs)"
 )
+_BROWSERS_INSTALLED = False
 
 
 class TrustpilotCollectError(Exception):
     """Raised when Trustpilot review collection fails."""
+
+
+def _project_browsers_path() -> Path:
+    """Writable cache under the repo (works on Streamlit Cloud)."""
+    root = Path(__file__).resolve().parents[2]
+    return root / ".playwright-browsers"
+
+
+def _configure_browsers_path() -> None:
+    # Keep an explicit Docker/ms-playwright path if the host already set one.
+    if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+        return
+    path = _project_browsers_path()
+    path.mkdir(parents=True, exist_ok=True)
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(path)
 
 
 def _missing_browser_error(exc: BaseException) -> bool:
@@ -36,23 +53,62 @@ def _missing_browser_error(exc: BaseException) -> bool:
     return (
         "executable doesn't exist" in message
         or "download new browsers" in message
+        or "browser has been closed" in message
     )
 
 
-def _ensure_playwright_chromium() -> None:
-    """Download Chromium into the current Playwright cache if missing."""
-    logger.warning("Playwright Chromium missing; installing via playwright install chromium")
+def ensure_playwright_browsers(*, force: bool = False) -> None:
+    """Download Chromium into the Playwright cache if needed.
+
+    Safe to call from Streamlit startup / collect handlers.
+    """
+    global _BROWSERS_INSTALLED
+    if _BROWSERS_INSTALLED and not force:
+        return
+
+    _configure_browsers_path()
     try:
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=600,
-            env=os.environ.copy(),
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise TrustpilotCollectError(
+            "Playwright is required for Trustpilot collection. "
+            "Install with: pip install playwright && python -m playwright install chromium"
+        ) from exc
+
+    needs_install = force
+    if not needs_install:
+        try:
+            with sync_playwright() as playwright:
+                exe = Path(playwright.chromium.executable_path)
+                needs_install = not exe.exists()
+        except Exception:  # noqa: BLE001
+            needs_install = True
+
+    if needs_install:
+        logger.warning(
+            "Installing Playwright Chromium into %s",
+            os.environ.get("PLAYWRIGHT_BROWSERS_PATH"),
         )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise TrustpilotCollectError(f"{_BROWSER_INSTALL_HINT}. Details: {exc}") from exc
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                env=os.environ.copy(),
+            )
+            if completed.stdout:
+                logger.info(completed.stdout[-2000:])
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or str(exc)).strip()
+            raise TrustpilotCollectError(
+                f"{_BROWSER_INSTALL_HINT}. Install failed: {detail}"
+            ) from exc
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise TrustpilotCollectError(f"{_BROWSER_INSTALL_HINT}. Details: {exc}") from exc
+
+    _BROWSERS_INSTALLED = True
 
 
 def _parse_next_data(html: str) -> dict[str, Any]:
@@ -120,12 +176,13 @@ def fetch_trustpilot_pages(domain: str, max_pages: int) -> list[str]:
 
 def _launch_chromium(playwright: Any):
     """Launch headless Chromium, installing browsers once if the cache is empty."""
+    ensure_playwright_browsers()
     try:
         return playwright.chromium.launch(headless=True)
     except Exception as exc:  # noqa: BLE001
         if not _missing_browser_error(exc):
             raise
-        _ensure_playwright_chromium()
+        ensure_playwright_browsers(force=True)
         try:
             return playwright.chromium.launch(headless=True)
         except Exception as retry_exc:  # noqa: BLE001
@@ -143,6 +200,7 @@ def _fetch_pages_with_playwright(domain: str, max_pages: int) -> list[str]:
             "Install with: pip install playwright && python -m playwright install chromium"
         ) from exc
 
+    _configure_browsers_path()
     pages_html: list[str] = []
     with sync_playwright() as playwright:
         browser = _launch_chromium(playwright)
