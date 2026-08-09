@@ -26,7 +26,16 @@ cd /path/to/new-project
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-playwright install chromium
+python -m playwright install chromium
+# Linux containers / CI also need system libs:
+# python -m playwright install-deps chromium
+```
+
+Docker (includes Chromium for Trustpilot):
+
+```bash
+docker build -t obrio-task .
+docker run --rm -p 8000:8000 obrio-task
 ```
 
 Optional (Obrio Ukrainian spaCy model):
