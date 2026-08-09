@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,6 +18,24 @@ from app.models.schemas import Review
 from app.services.analyzer import build_insights, compute_metrics
 from app.services.metrics import calculate_rating_metrics, rating_metrics_to_dict
 from app.storage import processed_store, resolve_dataset, store
+
+
+def _install_playwright_chromium() -> None:
+    """Download Chromium into Playwright's default cache (needed on Streamlit Cloud)."""
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            if Path(playwright.chromium.executable_path).exists():
+                return
+    except Exception:  # noqa: BLE001
+        pass
+
+    subprocess.run(
+        [sys.executable, "-m", "playwright", "install", "chromium"],
+        check=False,
+        timeout=600,
+    )
 
 DATASETS = {
     "nebula": "Nebula · Trustpilot",
@@ -217,6 +236,10 @@ with st.sidebar:
 
                 gathered: list[Review] = []
                 if collect_source in {"both", "trustpilot"}:
+                    with st.spinner(
+                        "Installing Chromium for Trustpilot (first run can take 1–2 min)…"
+                    ):
+                        _install_playwright_chromium()
                     gathered.extend(
                         collect_trustpilot_reviews(
                             domain="asknebula.com",

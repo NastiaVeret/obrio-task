@@ -33,21 +33,6 @@ class TrustpilotCollectError(Exception):
     """Raised when Trustpilot review collection fails."""
 
 
-def _project_browsers_path() -> Path:
-    """Writable cache under the repo (works on Streamlit Cloud)."""
-    root = Path(__file__).resolve().parents[2]
-    return root / ".playwright-browsers"
-
-
-def _configure_browsers_path() -> None:
-    # Keep an explicit Docker/ms-playwright path if the host already set one.
-    if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
-        return
-    path = _project_browsers_path()
-    path.mkdir(parents=True, exist_ok=True)
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(path)
-
-
 def _missing_browser_error(exc: BaseException) -> bool:
     message = str(exc).lower()
     return (
@@ -58,15 +43,16 @@ def _missing_browser_error(exc: BaseException) -> bool:
 
 
 def ensure_playwright_browsers(*, force: bool = False) -> None:
-    """Download Chromium into the Playwright cache if needed.
+    """Download Chromium into Playwright's default user cache if needed.
 
-    Safe to call from Streamlit startup / collect handlers.
+    Uses the normal ``~/.cache/ms-playwright`` location (on Streamlit Cloud:
+    ``/home/appuser/.cache/ms-playwright``) so Streamlit and the collector share
+    the same browser install.
     """
     global _BROWSERS_INSTALLED
     if _BROWSERS_INSTALLED and not force:
         return
 
-    _configure_browsers_path()
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -85,10 +71,8 @@ def ensure_playwright_browsers(*, force: bool = False) -> None:
             needs_install = True
 
     if needs_install:
-        logger.warning(
-            "Installing Playwright Chromium into %s",
-            os.environ.get("PLAYWRIGHT_BROWSERS_PATH"),
-        )
+        cache = os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or "(default user cache)"
+        logger.warning("Installing Playwright Chromium into %s", cache)
         try:
             completed = subprocess.run(
                 [sys.executable, "-m", "playwright", "install", "chromium"],
@@ -175,8 +159,7 @@ def fetch_trustpilot_pages(domain: str, max_pages: int) -> list[str]:
 
 
 def _launch_chromium(playwright: Any):
-    """Launch headless Chromium, installing browsers once if the cache is empty."""
-    ensure_playwright_browsers()
+    """Launch headless Chromium; reinstall once if the binary is missing."""
     try:
         return playwright.chromium.launch(headless=True)
     except Exception as exc:  # noqa: BLE001
@@ -200,7 +183,9 @@ def _fetch_pages_with_playwright(domain: str, max_pages: int) -> list[str]:
             "Install with: pip install playwright && python -m playwright install chromium"
         ) from exc
 
-    _configure_browsers_path()
+    # Install before opening a Playwright driver session (avoids nested contexts).
+    ensure_playwright_browsers()
+
     pages_html: list[str] = []
     with sync_playwright() as playwright:
         browser = _launch_chromium(playwright)
