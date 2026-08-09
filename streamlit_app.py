@@ -211,18 +211,12 @@ with st.sidebar:
             try:
                 from app.collectors.app_store import collect_app_store_reviews
                 from app.collectors.dou import collect_dou_reviews
-                from app.collectors.trustpilot import (
-                    collect_trustpilot_reviews,
-                    ensure_playwright_browsers,
-                )
+                from app.collectors.trustpilot import collect_trustpilot_reviews
                 from app.services.processing import process_reviews
                 from app.storage import sample_by_source
 
                 gathered: list[Review] = []
                 if collect_source in {"both", "trustpilot"}:
-                    # Streamlit Cloud ships Playwright without browsers; install on demand.
-                    with st.spinner("Preparing Trustpilot browser (first run may take a minute)…"):
-                        ensure_playwright_browsers()
                     gathered.extend(
                         collect_trustpilot_reviews(
                             domain="asknebula.com",
